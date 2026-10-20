@@ -13,14 +13,16 @@ from bs4 import BeautifulSoup
 from googlenewsdecoder import gnewsdecoder
 
 
-# ============================================================
+# --------------------------------------------------
 # SETTINGS
-# ============================================================
+# --------------------------------------------------
 
 WEBHOOK = os.environ["DISCORD_NEWS_WEBHOOK_URL"]
+
 HISTORY_FILE = Path("posted_articles.json")
 
 QUERY = '"Tate McRae" when:7d'
+
 FEED_URL = (
     "https://news.google.com/rss/search?q="
     + quote_plus(QUERY)
@@ -28,11 +30,13 @@ FEED_URL = (
 )
 
 PINK = 0xDFA6C8
+
 HOUSEWIFE_BACKUP_IMAGE = (
     "https://www.billboard.com/wp-content/uploads/2026/10/"
     "tate-mcrae-housewife-press-billboard-1800.jpg"
     "?w=942&h=628&crop=1"
 )
+
 MAX_FIRST_RUN_POSTS = 5
 MAX_POSTS_PER_RUN = 10
 MAX_HISTORY_ITEMS = 2000
@@ -45,19 +49,18 @@ HEADERS = {
 }
 
 
-# ============================================================
+# --------------------------------------------------
 # ARTICLE HELPERS
-# ============================================================
+# --------------------------------------------------
 
 def article_key(entry):
-    """Create a stable ID to help prevent duplicate posts."""
-    identifier = entry.get("id") or entry.get("link")
-
-    if not identifier:
-        identifier = entry.get("title", "Untitled article")
+    """Create a consistent ID for each article."""
+    link = entry.get("link", "").strip()
+    title = entry.get("title", "").strip()
+    article_id = link or title
 
     return hashlib.sha256(
-        identifier.strip().encode("utf-8")
+        article_id.encode("utf-8")
     ).hexdigest()
 
 
@@ -66,141 +69,125 @@ def published_time(entry):
     published = entry.get("published_parsed")
 
     if published:
-        return time.strftime("%d %b %Y, %H:%M UTC", published)
+        try:
+            date = datetime(
+                *published[:6],
+                tzinfo=timezone.utc
+            )
+            return date.strftime("%d %b %Y")
+        except (TypeError, ValueError):
+            pass
 
-    return "Publication date unavailable"
+    return "Date unavailable"
 
 
 def source_name(entry, title):
-    """Extract the publisher name from the RSS entry."""
-    source = (entry.get("source") or {}).get("title", "")
+    """Separate the article headline from its publisher."""
+    source = entry.get("source", {})
+    publisher = ""
 
-    if source:
-        suffix = " - " + source
+    if hasattr(source, "get"):
+        publisher = source.get("title", "")
+
+    if publisher:
+        suffix = " - " + publisher
 
         if title.endswith(suffix):
             title = title[:-len(suffix)]
 
-        return title.strip(), source
+    elif " - " in title:
+        title, publisher = title.rsplit(" - ", 1)
 
-    if " - " in title:
-        headline, publisher = title.rsplit(" - ", 1)
-        return headline.strip(), publisher.strip()
+    if not publisher:
+        publisher = "News source"
 
-    return title.strip(), "Google News"
+    return title.strip(), publisher.strip()
 
 
-# ============================================================
-# ARTICLE IMAGE FINDER
-# ============================================================
+# --------------------------------------------------
+# FIND ARTICLE IMAGES
+# --------------------------------------------------
 
 def get_article_image(url):
-    """
-    Resolve the Google News link, then look for an image
-    on the publisher's article page.
+    """Try to find the main image on an article page."""
+    article_url = url
 
-    Some publishers block automated requests or don't expose
-    their featured image, so an image isn't always available.
-    """
     try:
-        # Resolve the Google News redirect.
-        result = gnewsdecoder(url, interval=1, timeout=15)
+        decoded = gnewsdecoder(url)
 
-        if (
-            not result
-            or not result.get("success")
-            or not result.get("decoded_url")
-        ):
-            print("Could not resolve Google News link.")
-            return None
+        if isinstance(decoded, dict):
+            if decoded.get("status") and decoded.get("decoded_url"):
+                article_url = decoded["decoded_url"]
 
-        article_url = result["decoded_url"]
-        print(f"Resolved article: {article_url}")
+    except Exception as error:
+        print(f"Could not decode article URL: {error}")
 
-        # Download the publisher's webpage.
+    try:
         response = requests.get(
             article_url,
             headers=HEADERS,
-            timeout=15,
+            timeout=20
         )
         response.raise_for_status()
 
         soup = BeautifulSoup(response.text, "html.parser")
 
-        def valid_image(value):
-            """Accept likely image URLs and reject obvious site icons."""
-            if not isinstance(value, str) or not value.strip():
-                return None
+        # First choice: the article's official preview image.
+        for attribute, value in [
+            ("property", "og:image"),
+            ("name", "twitter:image"),
+        ]:
+            tag = soup.find("meta", attrs={attribute: value})
 
-            value = urljoin(response.url, value.strip())
-
-            if not value.startswith("https://"):
-                return None
-
-            if any(
-                word in value.lower()
-                for word in (
-                    "logo",
-                    "avatar",
-                    "favicon",
-                    "tracking",
+            if tag and tag.get("content"):
+                image_url = urljoin(
+                    article_url,
+                    tag["content"].strip()
                 )
-            ):
-                return None
 
-            return value
+                if image_url.startswith(("http://", "https://")):
+                    return image_url
 
-        # 1. Look for image links used by the publisher.
-        for tag in soup.select('a[href*="/v3/re/new_assets/"]'):
-            image_url = valid_image(tag.get("href"))
+        # Second choice: images inside the article.
+        article = soup.find("article")
 
-            if image_url:
-                print(f"Found article image: {image_url}")
-                return image_url
-
-        # 2. Look inside the article content.
-        article = soup.find("article") or soup.find("main")
+        if not article:
+            article = soup.find("main")
 
         if article:
             for img in article.find_all("img"):
-                for attribute in (
+                for attribute in [
                     "src",
                     "data-src",
                     "data-original",
                     "data-lazy-src",
-                ):
-                    image_url = valid_image(img.get(attribute))
+                ]:
+                    image_url = img.get(attribute)
 
                     if image_url:
-                        print(f"Found article-body image: {image_url}")
-                        return image_url
+                        image_url = urljoin(
+                            article_url,
+                            image_url.strip()
+                        )
 
-                # Some sites use responsive image sources.
-                srcset = img.get("srcset")
+                        if image_url.startswith(
+                            ("http://", "https://")
+                        ):
+                            return image_url
+
+                # Some sites store images in srcset.
+                srcset = img.get("srcset", "")
 
                 if srcset:
-                    first_image = srcset.split(",")[0].strip().split()[0]
-                    image_url = valid_image(first_image)
+                    image_url = srcset.split(",")[0].strip().split(" ")[0]
+                    image_url = urljoin(article_url, image_url)
 
-                    if image_url:
-                        print(f"Found responsive article image: {image_url}")
+                    if image_url.startswith(
+                        ("http://", "https://")
+                    ):
                         return image_url
 
-        # 3. Fall back to social preview metadata.
-        for attribute, value in (
-            ("property", "og:image"),
-            ("name", "twitter:image"),
-        ):
-            tag = soup.find("meta", attrs={attribute: value})
-
-            if tag:
-                image_url = valid_image(tag.get("content"))
-
-                if image_url:
-                    print(f"Using preview image: {image_url}")
-                    return image_url
-
-        print("No suitable article image was found.")
+        print(f"No article image found: {article_url}")
         return None
 
     except Exception as error:
@@ -208,10 +195,9 @@ def get_article_image(url):
         return None
 
 
-# ============================================================
-# DISCORD POSTING
-# ============================================================
-
+# --------------------------------------------------
+# SEND ARTICLE TO DISCORD
+# --------------------------------------------------
 
 def post_article(entry):
     """Post one article as a pink Discord embed."""
@@ -225,10 +211,8 @@ def post_article(entry):
     title, publisher = source_name(entry, title)
     date = published_time(entry)
 
-    # Try the article image first.
     image_url = get_article_image(link)
 
-    # Use the Housewife cover if no suitable image is found.
     if not image_url:
         image_url = HOUSEWIFE_BACKUP_IMAGE
         print("Using the Housewife backup image.")
@@ -256,83 +240,98 @@ def post_article(entry):
     response = requests.post(
         WEBHOOK,
         json={"embeds": [embed]},
-        timeout=30,
+        timeout=30
     )
+
     response.raise_for_status()
 
     print(f"Posted: {title}")
     return True
 
 
-# ============================================================
-# MAIN NEWS CHECK
-# ============================================================
+# --------------------------------------------------
+# MAIN NEWS BOT
+# --------------------------------------------------
 
 def main():
-    """Fetch news, skip duplicates, and post new articles."""
+    print("Starting Tate McRae News Bot...")
+
+    # Load previously recorded articles.
     first_run = not HISTORY_FILE.exists()
 
-    # Load previously posted article IDs.
-    if HISTORY_FILE.exists():
-        try:
-            seen = json.loads(
-                HISTORY_FILE.read_text(encoding="utf-8")
-            )
+    try:
+        with HISTORY_FILE.open("r", encoding="utf-8") as file:
+            seen = json.load(file)
 
-            if not isinstance(seen, dict):
-                seen = {}
-
-        except (json.JSONDecodeError, OSError):
+        if not isinstance(seen, dict):
             seen = {}
-    else:
+
+    except (json.JSONDecodeError, OSError):
         seen = {}
 
-    # Fetch the Google News RSS feed.
-    response = requests.get(
-        FEED_URL,
-        headers=HEADERS,
-        timeout=30,
-    )
-    response.raise_for_status()
+    if not seen:
+        first_run = True
 
-    feed = feedparser.parse(response.content)
+    # Fetch the Google News RSS feed.
+    try:
+        response = requests.get(
+            FEED_URL,
+            headers=HEADERS,
+            timeout=30
+        )
+
+        print(
+            f"Google News HTTP status: {response.status_code}"
+        )
+
+        response.raise_for_status()
+
+        feed = feedparser.parse(response.content)
+
+        print(f"Feed entries found: {len(feed.entries)}")
+        print(f"History file exists: {HISTORY_FILE.exists()}")
+        print(f"Previously recorded articles: {len(seen)}")
+
+    except requests.RequestException as error:
+        print(f"ERROR: Could not fetch Google News: {error}")
+        raise
 
     if not feed.entries:
-        print("No news articles found.")
+        print("No articles were returned by Google News.")
         return
 
-    # Sort newest articles first.
+    # Put the newest articles first.
     entries = sorted(
         feed.entries,
         key=lambda entry: (
-            time.mktime(entry.published_parsed)
-            if entry.get("published_parsed")
-            else 0
+            entry.get("published_parsed") or time.gmtime(0)
         ),
-        reverse=True,
+        reverse=True
     )
 
     now = datetime.now(timezone.utc).isoformat()
 
+    # Choose articles to post.
     if first_run:
         print("First run: setting up article history.")
 
-        # Post up to five recent articles, and mark older
-        # results as seen so the channel isn't flooded.
         candidates = entries[:MAX_FIRST_RUN_POSTS]
 
+        # Record older articles without posting them all.
         for entry in entries[MAX_FIRST_RUN_POSTS:]:
             seen[article_key(entry)] = now
 
     else:
-        # Only select articles that haven't been posted before.
         candidates = [
             entry
             for entry in entries
             if article_key(entry) not in seen
         ][:MAX_POSTS_PER_RUN]
 
-    posted_count = 0
+    print(f"New articles selected to post: {len(candidates)}")
+
+    # Post the selected articles.
+    posted = 0
 
     for entry in candidates:
         key = article_key(entry)
@@ -340,24 +339,36 @@ def main():
         try:
             if post_article(entry):
                 seen[key] = now
-                posted_count += 1
+                posted += 1
 
         except requests.RequestException as error:
-            # Don't mark failed posts as seen; they can be retried.
             print(
-                f"Could not post "
-                f"{entry.get('title', 'Unknown article')}: {error}"
+                f"ERROR posting article "
+                f"{entry.get('title', 'Untitled')}: {error}"
             )
 
-    # Keep the history file manageable.
-    seen = dict(list(seen.items())[-MAX_HISTORY_ITEMS:])
+        except Exception as error:
+            print(
+                f"Unexpected error for "
+                f"{entry.get('title', 'Untitled')}: {error}"
+            )
 
-    HISTORY_FILE.write_text(
-        json.dumps(seen, indent=2),
-        encoding="utf-8",
-    )
+    # Keep the history file from growing indefinitely.
+    if len(seen) > MAX_HISTORY_ITEMS:
+        seen = dict(
+            list(seen.items())[-MAX_HISTORY_ITEMS:]
+        )
 
-    print(f"Finished! Articles posted: {posted_count}")
+    # Save article history.
+    try:
+        with HISTORY_FILE.open("w", encoding="utf-8") as file:
+            json.dump(seen, file, indent=2)
+
+    except OSError as error:
+        print(f"ERROR saving article history: {error}")
+        raise
+
+    print(f"Finished! Articles posted: {posted}")
 
 
 if __name__ == "__main__":
