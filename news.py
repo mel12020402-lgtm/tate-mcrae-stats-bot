@@ -212,6 +212,7 @@ def get_article_image(url):
 # DISCORD POSTING
 # ============================================================
 
+
 def post_article(entry):
     """Post one article as a pink Discord embed."""
     title = entry.get("title", "Untitled article")
@@ -224,12 +225,13 @@ def post_article(entry):
     title, publisher = source_name(entry, title)
     date = published_time(entry)
 
-# Try the article image first, then use the Housewife cover.
-image_url = get_article_image(link)
+    # Try the article image first.
+    image_url = get_article_image(link)
 
-if not image_url:
-    image_url = HOUSEWIFE_BACKUP_IMAGE
-    print("Using the Housewife backup image.")
+    # Use the Housewife cover if no suitable image is found.
+    if not image_url:
+        image_url = HOUSEWIFE_BACKUP_IMAGE
+        print("Using the Housewife backup image.")
 
     embed = {
         "author": {
@@ -246,13 +248,11 @@ if not image_url:
         "footer": {
             "text": "Tate McRae News  •  New article"
         },
+        "image": {
+            "url": image_url
+        },
     }
 
-    # Display a large image when one is available.
-    if image_url:
-        embed["image"] = {"url": image_url}
-
-    # Each article gets its own Discord message.
     response = requests.post(
         WEBHOOK,
         json={"embeds": [embed]},
