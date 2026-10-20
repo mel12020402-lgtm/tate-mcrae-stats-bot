@@ -9,6 +9,8 @@ from urllib.parse import quote_plus
 
 import requests
 import feedparser
+from bs4 import BeautifulSoup
+from urllib.parse import urljoin
 
 # Separate webhook for the news channel
 WEBHOOK = os.environ["DISCORD_NEWS_WEBHOOK_URL"]
@@ -71,9 +73,44 @@ def source_name(entry, title):
 
     return title.strip(), "Google News"
 
+def get_article_image(url):
+    """Find the article's preview image."""
+    try:
+        response = requests.get(
+            url,
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (compatible; TateMcRaeNewsBot/1.0)"
+                )
+            },
+            timeout=15,
+        )
+        response.raise_for_status()
+
+        soup = BeautifulSoup(response.text, "html.parser")
+
+        # Try the most common image preview tags
+        image_tag = (
+            soup.find("meta", property="og:image")
+            or soup.find("meta", attrs={"name": "twitter:image"})
+        )
+
+        if image_tag and image_tag.get("content"):
+            image_url = urljoin(
+                response.url,
+                image_tag["content"].strip()
+            )
+
+            if image_url.startswith("https://"):
+                return image_url
+
+    except Exception as error:
+        print(f"Could not retrieve article image: {error}")
+
+    return None
 
 def post_article(entry):
-    """Post one article as one Discord embed."""
+    """Post one article with its image when available."""
     title = entry.get("title", "Untitled article")
     link = entry.get("link", "")
 
@@ -84,22 +121,31 @@ def post_article(entry):
     title, publisher = source_name(entry, title)
     date = published_time(entry)
 
+    # Find the article's front-page image
+    image_url = get_article_image(link)
+
     embed = {
         "author": {
-            "name": "TATE MCRAE • NEWS UPDATE"
+            "name": "TATE MCRAE  •  NEWS UPDATE"
         },
         "title": title[:250],
         "url": link,
         "description": (
             f"📰 **Source:** {publisher}\n"
             f"📅 **Published:** {date}\n\n"
-            "[Read the full article](%s)" % link
+            f"[Read the full article]({link})"
         ),
         "color": PINK,
         "footer": {
-            "text": "Tate McRae News • New article"
+            "text": "Tate McRae News  •  New article"
         },
     }
+
+    # Add the large article image if one was found
+    if image_url:
+        embed["image"] = {"url": image_url}
+    else:
+        print(f"No preview image found for: {title}")
 
     response = requests.post(
         WEBHOOK,
