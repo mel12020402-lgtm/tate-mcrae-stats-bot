@@ -1,8 +1,6 @@
 
 import os
 import re
-from datetime import datetime, timezone
-
 import pandas as pd
 import requests
 
@@ -10,20 +8,28 @@ URL = (
     "https://kworb.net/spotify/artist/"
     "45dkTj5sMRSjrmBSBeiHym_songs.html"
 )
+
 WEBHOOK = os.environ["DISCORD_WEBHOOK_URL"]
 
 
 def number(value):
-    """Turn a displayed number into an integer."""
+    """Extract a number from a displayed value."""
     match = re.search(r"\d[\d,]*", str(value))
     if not match:
         raise ValueError(f"Couldn't read number: {value}")
     return int(match.group(0).replace(",", ""))
 
 
+def safe_number(value):
+    """Return zero for missing values, for sorting only."""
+    if pd.isna(value) or not re.search(r"\d", str(value)):
+        return 0
+    return number(value)
+
+
 response = requests.get(
     URL,
-    headers={"User-Agent": "TateStatsDiscordBot/1.0"},
+    headers={"User-Agent": "Mozilla/5.0 TateStatsBot/1.0"},
     timeout=30,
 )
 response.raise_for_status()
@@ -31,37 +37,46 @@ response.raise_for_status()
 page = response.text
 tables = pd.read_html(page)
 
-# Find the summary table containing total and daily streams.
+# Find the summary table.
 summary = None
+
 for table in tables:
+    if table.empty:
+        continue
+
     first_column = table.iloc[:, 0].astype(str).str.strip()
     labels = set(first_column)
+
     if "Streams" in labels and "Daily" in labels:
         summary = table
         break
 
 if summary is None:
-    raise ValueError("Kworb's summary table was not recognised.")
+    raise ValueError("Could not find the Spotify summary table on Kworb.")
 
 first_column = summary.iloc[:, 0].astype(str).str.strip()
+
 total_row = summary.loc[first_column == "Streams"].iloc[0]
 daily_row = summary.loc[first_column == "Daily"].iloc[0]
 
 total_streams = number(total_row.iloc[1])
 daily_streams = number(daily_row.iloc[1])
 
-# Find the individual-song table.
+# Find the song table.
 songs = None
+
 for table in tables:
-    columns = [str(c).lower() for c in table.columns]
-    if any("song title" in c for c in columns) and any(
-        c.strip() == "daily" for c in columns
+    columns = [str(column).strip().lower() for column in table.columns]
+
+    if (
+        any("song title" in column for column in columns)
+        and any(column == "daily" for column in columns)
     ):
         songs = table.copy()
         break
 
 if songs is None:
-    raise ValueError("Kworb's song table was not recognised.")
+    raise ValueError("Could not find the song table on Kworb.")
 
 def find_column(columns, phrase):
     for column in columns:
@@ -69,10 +84,12 @@ def find_column(columns, phrase):
             return column
     raise ValueError(f"Missing column: {phrase}")
 
+
 title_col = find_column(songs.columns, "song title")
 daily_col = find_column(songs.columns, "daily")
 
-songs["_daily_number"] = songs[daily_col].map(number)
+songs["_daily_number"] = songs[daily_col].map(safe_number)
+
 top_songs = songs.sort_values(
     "_daily_number", ascending=False
 ).head(5)
@@ -82,11 +99,17 @@ song_lines = "\n".join(
     for _, row in top_songs.iterrows()
 )
 
-# Use the date displayed on the source page, if available.
+# Find the source reporting date, if Kworb includes it.
 date_match = re.search(
-    r"Last updated:\s*(\d{4}/\d{2}/\d{2})", page
+    r"Last updated:\s*(\d{4}/\d{2}/\d{2})",
+    page,
 )
-source_date = date_match.group(1) if date_match else "Date unavailable"
+
+source_date = (
+    date_match.group(1)
+    if date_match
+    else "Check source page for reporting date"
+)
 
 message = (
     "📊 **TATE MCRAE — DAILY SPOTIFY STATS**\n"
@@ -98,7 +121,7 @@ message = (
 )
 
 if len(message) > 1900:
-    raise ValueError("Report is too long for a single Discord message.")
+    raise ValueError("Report is too long for one Discord message.")
 
 posted = requests.post(
     WEBHOOK,
@@ -106,4 +129,6 @@ posted = requests.post(
     timeout=30,
 )
 posted.raise_for_status()
+
 print("Stats report posted successfully.")
+
