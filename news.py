@@ -32,7 +32,7 @@ PINK = 0xDFA6C8
 HOUSEWIFE_BACKUP_IMAGE = (
     "https://www.billboard.com/wp-content/uploads/2026/10/"
     "tate-mcrae-housewife-press-billboard-1800.jpg"
-    "?w=942&h=628&crop=1"
+)
 )
 
 MAX_FIRST_RUN_POSTS = 5
@@ -293,11 +293,13 @@ def post_article(entry):
     title, publisher = source_name(entry, title)
     date = published_time(entry)
 
-    image_url = get_article_image(link)
+image_url = get_article_image(link)
 
-    if not image_url:
-        image_url = HOUSEWIFE_BACKUP_IMAGE
-        print("Using the Housewife backup image.")
+if not image_url:
+    image_url = HOUSEWIFE_BACKUP_IMAGE
+    print("Using the Housewife backup image.")
+
+print(f"FINAL IMAGE URL: {image_url}")
 
     embed = {
         "author": {
