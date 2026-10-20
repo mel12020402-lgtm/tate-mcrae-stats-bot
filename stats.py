@@ -98,29 +98,30 @@ for chart_name, chart_info in CHARTS.items():
         print(f"Error fetching {chart_name}: {error}")
         lines.append("Chart data temporarily unavailable.\n")
 
+
 # Prepare the chart text
 description = "\n".join(lines)
 
-# Keep the embed description within Discord's character limit
 if len(description) > 4000:
     description = description[:3950] + "\n\nReport shortened."
 
-# Send ONE Discord message containing TWO embeds:
-# 1. Title and banner image
-# 2. Billboard chart results
+# Send everything in ONE continuous Discord embed
 response = requests.post(
     WEBHOOK,
     json={
         "embeds": [
             {
-                "title": "📊 TATE MCRAE — BILLBOARD CHART UPDATE",
+                "author": {
+                    "name": "TATE MCRAE • DAILY CHART REPORT"
+                },
+                "title": "📊 Billboard Chart Update",
+                "description": description,
                 "image": {"url": IMAGE_URL},
                 "color": 0xDFA6C8,
-            },
-            {
-                "description": description,
-                "color": 0xDFA6C8,
-            },
+                "footer": {
+                    "text": "Tate McRae • Billboard chart tracking"
+                },
+            }
         ]
     },
     timeout=30,
@@ -129,3 +130,4 @@ response = requests.post(
 response.raise_for_status()
 
 print("Successfully posted Tate McRae's Billboard chart update!")
+
