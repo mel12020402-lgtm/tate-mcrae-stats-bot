@@ -9,6 +9,7 @@ from urllib.parse import quote_plus
 
 import requests
 import feedparser
+from googlenewsdecoder import gnewsdecoder
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
 
@@ -74,13 +75,25 @@ def source_name(entry, title):
     return title.strip(), "Google News"
 
 def get_article_image(url):
-    """Find the article's preview image."""
+    """Resolve Google News and find the publisher's image."""
     try:
+        # Resolve Google's special link to the real article
+        result = gnewsdecoder(url, interval=1, timeout=15)
+
+        if not result.get("success"):
+            print("Could not resolve Google News link.")
+            return None
+
+        article_url = result["decoded_url"]
+        print(f"Resolved article: {article_url}")
+
+        # Fetch the actual publisher's webpage
         response = requests.get(
-            url,
+            article_url,
             headers={
                 "User-Agent": (
-                    "Mozilla/5.0 (compatible; TateMcRaeNewsBot/1.0)"
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36"
                 )
             },
             timeout=15,
@@ -89,20 +102,26 @@ def get_article_image(url):
 
         soup = BeautifulSoup(response.text, "html.parser")
 
-        # Try the most common image preview tags
-        image_tag = (
-            soup.find("meta", property="og:image")
-            or soup.find("meta", attrs={"name": "twitter:image"})
-        )
+        # Prefer the article's main preview image
+        for selector in [
+            ("property", "og:image"),
+            ("name", "twitter:image"),
+            ("itemprop", "image"),
+        ]:
+            attribute, value = selector
+            tag = soup.find("meta", attrs={attribute: value})
 
-        if image_tag and image_tag.get("content"):
-            image_url = urljoin(
-                response.url,
-                image_tag["content"].strip()
-            )
+            if tag and tag.get("content"):
+                image_url = urljoin(
+                    response.url,
+                    tag["content"].strip()
+                )
 
-            if image_url.startswith("https://"):
-                return image_url
+                if (
+                    image_url.startswith("https://")
+                    and "googleusercontent.com" not in image_url
+                ):
+                    return image_url
 
     except Exception as error:
         print(f"Could not retrieve article image: {error}")
