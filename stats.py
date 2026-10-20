@@ -1,134 +1,83 @@
 
 import os
-import re
-import pandas as pd
 import requests
-
-URL = (
-    "https://kworb.net/spotify/artist/"
-    "45dkTj5sMRSjrmBSBeiHym_songs.html"
-)
+from billboard_charts import fetch_chart
 
 WEBHOOK = os.environ["DISCORD_WEBHOOK_URL"]
 
+CHARTS = {
+    "Billboard Hot 100": "hot-100",
+    "Billboard 200 (albums)": "billboard-200",
+    "Billboard Global 200": "global-200",
+}
 
-def number(value):
-    """Extract a number from a displayed value."""
-    match = re.search(r"\d[\d,]*", str(value))
-    if not match:
-        raise ValueError(f"Couldn't read number: {value}")
-    return int(match.group(0).replace(",", ""))
+lines = ["📊 **TATE MCRAE — BILLBOARD CHART UPDATE**"]
 
+for chart_name, slug in CHARTS.items():
+    lines.append(f"\n**{chart_name}**")
 
-def safe_number(value):
-    """Return zero for missing values, for sorting only."""
-    if pd.isna(value) or not re.search(r"\d", str(value)):
-        return 0
-    return number(value)
+    try:
+        entries = fetch_chart(slug)
 
+        if not entries:
+            lines.append("Could not retrieve chart entries.")
+            continue
 
-response = requests.get(
-    URL,
-    headers={"User-Agent": "Mozilla/5.0 TateStatsBot/1.0"},
-    timeout=30,
-)
-response.raise_for_status()
+        chart_date = entries[0].get("Date", "Latest published chart")
+        matches = [
+            entry for entry in entries
+            if "tate mcrae" in str(entry.get("Artist", "")).lower()
+        ]
 
-page = response.text
-tables = pd.read_html(page)
+        lines.append(f"*Chart date: {chart_date}*")
 
-# Find the summary table.
-summary = None
+        if not matches:
+            lines.append("No Tate McRae entries in this chart.")
+            continue
 
-for table in tables:
-    if table.empty:
-        continue
+        for entry in matches:
+            rank = entry.get("Rank", "?")
+            title = entry.get("Song", "Unknown title")
+            previous = entry.get("Last Week")
+            peak = entry.get("Peak Position", "?")
+            weeks = entry.get("Weeks on Chart", "?")
 
-    first_column = table.iloc[:, 0].astype(str).str.strip()
-    labels = set(first_column)
+            if previous in (None, 0, "0"):
+                movement = "NEW / RE-ENTRY"
+            elif str(previous) == str(rank):
+                movement = "↔ unchanged"
+            else:
+                try:
+                    change = int(previous) - int(rank)
+                    movement = (
+                        f"↑ {change} places" if change > 0
+                        else f"↓ {abs(change)} places"
+                    )
+                except (TypeError, ValueError):
+                    movement = "Movement unavailable"
 
-    if "Streams" in labels and "Daily" in labels:
-        summary = table
-        break
+            lines.append(
+                f"• **#{rank}** — {title}\n"
+                f"  {movement} · Peak #{peak} · "
+                f"Weeks on chart: {weeks}"
+            )
 
-if summary is None:
-    raise ValueError("Could not find the Spotify summary table on Kworb.")
+    except Exception as error:
+        print(f"Chart error for {chart_name}: {error}")
+        lines.append("Chart data temporarily unavailable.")
 
-first_column = summary.iloc[:, 0].astype(str).str.strip()
-
-total_row = summary.loc[first_column == "Streams"].iloc[0]
-daily_row = summary.loc[first_column == "Daily"].iloc[0]
-
-total_streams = number(total_row.iloc[1])
-daily_streams = number(daily_row.iloc[1])
-
-# Find the song table.
-songs = None
-
-for table in tables:
-    columns = [str(column).strip().lower() for column in table.columns]
-
-    if (
-        any("song title" in column for column in columns)
-        and any(column == "daily" for column in columns)
-    ):
-        songs = table.copy()
-        break
-
-if songs is None:
-    raise ValueError("Could not find the song table on Kworb.")
-
-def find_column(columns, phrase):
-    for column in columns:
-        if phrase in str(column).lower():
-            return column
-    raise ValueError(f"Missing column: {phrase}")
-
-
-title_col = find_column(songs.columns, "song title")
-daily_col = find_column(songs.columns, "daily")
-
-songs["_daily_number"] = songs[daily_col].map(safe_number)
-
-top_songs = songs.sort_values(
-    "_daily_number", ascending=False
-).head(5)
-
-song_lines = "\n".join(
-    f"• **{row[title_col]}** — {row['_daily_number']:,} streams"
-    for _, row in top_songs.iterrows()
-)
-
-# Find the source reporting date, if Kworb includes it.
-date_match = re.search(
-    r"Last updated:\s*(\d{4}/\d{2}/\d{2})",
-    page,
-)
-
-source_date = (
-    date_match.group(1)
-    if date_match
-    else "Check source page for reporting date"
-)
-
-message = (
-    "📊 **TATE MCRAE — DAILY SPOTIFY STATS**\n"
-    f"**Source reporting date:** {source_date}\n\n"
-    f"🎧 **Total streams:** {total_streams:,}\n"
-    f"📈 **Daily streams:** {daily_streams:,}\n\n"
-    f"**Top songs by daily streams**\n{song_lines}\n\n"
-    f"🔗 [View Kworb source]({URL})"
-)
+message = "\n".join(lines)
 
 if len(message) > 1900:
-    raise ValueError("Report is too long for one Discord message.")
+    message = message[:1850] + "\n\nReport shortened."
 
-posted = requests.post(
+response = requests.post(
     WEBHOOK,
     json={"content": message},
     timeout=30,
 )
-posted.raise_for_status()
+response.raise_for_status()
 
-print("Stats report posted successfully.")
+print("Billboard chart report posted.")
+
 
