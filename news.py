@@ -33,7 +33,6 @@ HOUSEWIFE_BACKUP_IMAGE = (
     "https://www.billboard.com/wp-content/uploads/2026/10/"
     "tate-mcrae-housewife-press-billboard-1800.jpg"
 )
-)
 
 MAX_FIRST_RUN_POSTS = 5
 MAX_POSTS_PER_RUN = 10
