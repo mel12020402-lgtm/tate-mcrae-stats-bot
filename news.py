@@ -335,6 +335,7 @@ def post_article(entry):
 
     print(f"FINAL IMAGE URL: {image_url}")
 
+
     embed = {
         "author": {
             "name": "TATE MCRAE  •  NEWS UPDATE"
@@ -354,6 +355,7 @@ def post_article(entry):
             "url": image_url
         },
     }
+
 
     response = requests.post(
         WEBHOOK,
