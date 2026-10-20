@@ -21,6 +21,7 @@ WEBHOOK = os.environ["DISCORD_NEWS_WEBHOOK_URL"]
 HISTORY_FILE = Path("posted_articles.json")
 
 QUERY = '"Tate McRae" when:7d'
+
 FEED_URL = (
     "https://news.google.com/rss/search?q="
     + quote_plus(QUERY)
@@ -53,8 +54,11 @@ HEADERS = {
 def article_key(entry):
     link = entry.get("link", "").strip()
     title = entry.get("title", "").strip()
+
+    unique_value = link or title
+
     return hashlib.sha256(
-        (link or title).encode("utf-8")
+        unique_value.encode("utf-8")
     ).hexdigest()
 
 
@@ -63,7 +67,10 @@ def published_time(entry):
 
     if published:
         try:
-            date = datetime(*published[:6], tzinfo=timezone.utc)
+            date = datetime(
+                *published[:6],
+                tzinfo=timezone.utc
+            )
             return date.strftime("%d %b %Y")
         except (TypeError, ValueError):
             pass
@@ -80,28 +87,35 @@ def source_name(entry, title):
 
     if publisher:
         suffix = " - " + publisher
+
         if title.endswith(suffix):
             title = title[:-len(suffix)]
+
     elif " - " in title:
         title, publisher = title.rsplit(" - ", 1)
 
-    return title.strip(), (publisher or "News source").strip()
+    return (
+        title.strip(),
+        (publisher or "News source").strip()
+    )
 
 
 # ==================================================
-# RESOLVE GOOGLE NEWS LINKS
+# GOOGLE NEWS LINK RESOLUTION
 # ==================================================
 
 def resolve_article_url(url):
-    """Try to decode a Google News URL into a publisher URL."""
+    """Try to resolve a Google News link to the publisher."""
     try:
         result = gnewsdecoder(url)
 
-        if isinstance(result, dict):
-            print(f"Decoder response: {result}")
+        print(f"Google News decoder response: {result}")
 
+        if isinstance(result, dict):
+            status = result.get("status")
             success = (
-                result.get("status") is True
+                status is True
+                or status == "success"
                 or result.get("success") is True
             )
 
@@ -110,23 +124,22 @@ def resolve_article_url(url):
                 or result.get("url")
             )
 
-            if original_url:
+            if original_url and success:
                 original_url = original_url.strip()
                 host = urlparse(original_url).netloc.lower()
 
                 if (
-                    success
+                    original_url.startswith(("https://", "http://"))
                     and host
                     and "news.google.com" not in host
-                    and original_url.startswith(("https://", "http://"))
                 ):
                     print(f"Resolved publisher: {original_url}")
                     return original_url
 
     except Exception as error:
-        print(f"Decoder error: {error}")
+        print(f"Google News decoding error: {error}")
 
-    # Try following ordinary HTTP redirects as a second attempt.
+    # Second attempt: follow HTTP redirects.
     try:
         response = requests.get(
             url,
@@ -142,15 +155,15 @@ def resolve_article_url(url):
         host = urlparse(final_url).netloc.lower()
 
         if (
-            host
+            final_url.startswith(("https://", "http://"))
+            and host
             and "news.google.com" not in host
-            and final_url.startswith(("https://", "http://"))
         ):
             print(f"Resolved through redirect: {final_url}")
             return final_url
 
     except requests.RequestException as error:
-        print(f"Redirect resolution failed: {error}")
+        print(f"Redirect resolution error: {error}")
 
     print("WARNING: Publisher link could not be resolved.")
     return url
@@ -171,7 +184,7 @@ def is_good_image_url(image_url):
     host = parsed.netloc.lower()
     path = parsed.path.lower()
 
-    # Reject Google-hosted previews and Google News logos.
+    # Reject Google-hosted previews and thumbnails.
     if (
         "news.google.com" in host
         or "googleusercontent.com" in host
@@ -179,22 +192,21 @@ def is_good_image_url(image_url):
     ):
         return False
 
-    if any(
-        word in path
-        for word in (
-            "favicon",
-            "logo",
-            "placeholder",
-            "default-avatar",
-        )
-    ):
+    unwanted_terms = (
+        "favicon",
+        "logo",
+        "placeholder",
+        "default-avatar",
+    )
+
+    if any(term in path for term in unwanted_terms):
         return False
 
     return True
 
 
 def get_article_image(url):
-    """Find an image on the publisher's article page."""
+    """Find a suitable image from the publisher's page."""
     try:
         response = requests.get(
             url,
@@ -203,27 +215,40 @@ def get_article_image(url):
         )
         response.raise_for_status()
 
-        soup = BeautifulSoup(response.text, "html.parser")
+        page_url = response.url
 
-        # Prefer the publisher's social preview metadata.
-        for attribute, value in (
+        soup = BeautifulSoup(
+            response.text,
+            "html.parser"
+        )
+
+        # Prefer social preview images.
+        metadata_options = (
             ("property", "og:image"),
             ("property", "og:image:secure_url"),
             ("name", "twitter:image"),
-        ):
-            tag = soup.find("meta", attrs={attribute: value})
+        )
+
+        for attribute, value in metadata_options:
+            tag = soup.find(
+                "meta",
+                attrs={attribute: value}
+            )
 
             if tag and tag.get("content"):
                 image_url = urljoin(
-                    response.url,
-                    tag["content"].strip(),
+                    page_url,
+                    tag["content"].strip()
                 )
 
                 if is_good_image_url(image_url):
-                    print(f"Publisher preview image: {image_url}")
+                    print(
+                        "Found publisher preview image: "
+                        f"{image_url}"
+                    )
                     return image_url
 
-        # If metadata isn't usable, inspect article images.
+        # If metadata is unavailable, inspect article images.
         article = soup.find("article") or soup.find("main")
 
         if article:
@@ -235,8 +260,13 @@ def get_article_image(url):
                 ]).lower()
 
                 if any(
-                    word in description
-                    for word in ("logo", "avatar", "icon", "favicon")
+                    term in description
+                    for term in (
+                        "logo",
+                        "avatar",
+                        "icon",
+                        "favicon",
+                    )
                 ):
                     continue
 
@@ -252,6 +282,7 @@ def get_article_image(url):
                 if srcset:
                     for item in srcset.split(","):
                         parts = item.strip().split()
+
                         if parts:
                             candidates.append(parts[0])
 
@@ -260,45 +291,49 @@ def get_article_image(url):
                         continue
 
                     image_url = urljoin(
-                        response.url,
-                        candidate.strip(),
+                        page_url,
+                        candidate.strip()
                     )
 
                     if is_good_image_url(image_url):
-                        print(f"Publisher article image: {image_url}")
+                        print(
+                            "Found publisher article image: "
+                            f"{image_url}"
+                        )
                         return image_url
 
         print("No suitable publisher image found.")
         return None
 
     except Exception as error:
-        print(f"Image retrieval error: {error}")
+        print(f"Article image retrieval error: {error}")
         return None
 
 
 # ==================================================
-# POST TO DISCORD
+# DISCORD POSTING
 # ==================================================
 
 def post_article(entry):
     title = entry.get("title", "Untitled article")
-    google_link = entry.get("link", "")
+    google_link = entry.get("link", "").strip()
 
     if not google_link:
         print(f"Skipping article without a link: {title}")
         return False
 
     link = resolve_article_url(google_link)
+
     title, publisher = source_name(entry, title)
     date = published_time(entry)
 
-image_url = get_article_image(link)
+    image_url = get_article_image(link)
 
-if not image_url:
-    image_url = HOUSEWIFE_BACKUP_IMAGE
-    print("Using the Housewife backup image.")
+    if not image_url:
+        image_url = HOUSEWIFE_BACKUP_IMAGE
+        print("Using the Housewife backup image.")
 
-print(f"FINAL IMAGE URL: {image_url}")
+    print(f"FINAL IMAGE URL: {image_url}")
 
     embed = {
         "author": {
@@ -325,6 +360,7 @@ print(f"FINAL IMAGE URL: {image_url}")
         json={"embeds": [embed]},
         timeout=30,
     )
+
     response.raise_for_status()
 
     print(f"Posted: {title}")
@@ -344,7 +380,10 @@ def main():
     first_run = not HISTORY_FILE.exists()
 
     try:
-        with HISTORY_FILE.open("r", encoding="utf-8") as file:
+        with HISTORY_FILE.open(
+            "r",
+            encoding="utf-8"
+        ) as file:
             seen = json.load(file)
 
         if not isinstance(seen, dict):
@@ -363,7 +402,11 @@ def main():
             timeout=30,
         )
 
-        print(f"Google News HTTP status: {response.status_code}")
+        print(
+            "Google News HTTP status: "
+            f"{response.status_code}"
+        )
+
         response.raise_for_status()
 
         feed = feedparser.parse(response.content)
@@ -391,13 +434,16 @@ def main():
 
     if first_run:
         print("First run: setting up article history.")
+
         candidates = entries[:MAX_FIRST_RUN_POSTS]
 
         for entry in entries[MAX_FIRST_RUN_POSTS:]:
             seen[article_key(entry)] = now
+
     else:
         candidates = [
-            entry for entry in entries
+            entry
+            for entry in entries
             if article_key(entry) not in seen
         ][:MAX_POSTS_PER_RUN]
 
@@ -415,20 +461,25 @@ def main():
 
         except requests.RequestException as error:
             print(
-                f"ERROR processing "
+                "ERROR processing "
                 f"{entry.get('title', 'Untitled')}: {error}"
             )
 
         except Exception as error:
             print(
-                f"Unexpected error processing "
+                "Unexpected error processing "
                 f"{entry.get('title', 'Untitled')}: {error}"
             )
 
     if len(seen) > MAX_HISTORY_ITEMS:
-        seen = dict(list(seen.items())[-MAX_HISTORY_ITEMS:])
+        seen = dict(
+            list(seen.items())[-MAX_HISTORY_ITEMS:]
+        )
 
-    with HISTORY_FILE.open("w", encoding="utf-8") as file:
+    with HISTORY_FILE.open(
+        "w",
+        encoding="utf-8"
+    ) as file:
         json.dump(seen, file, indent=2)
 
     print(f"Finished! Articles posted: {posted}")
