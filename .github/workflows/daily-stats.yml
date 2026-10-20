@@ -19,7 +19,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install packages
-        run: pip install pandas lxml requests
+run: pip install billboard-charts requests
 
       - name: Post Tate stats
         env:
