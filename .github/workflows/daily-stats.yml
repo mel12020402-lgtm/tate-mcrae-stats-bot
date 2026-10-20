@@ -1,0 +1,27 @@
+
+name: Tate McRae Daily Stats
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 23 * * *"
+
+jobs:
+  post-stats:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install packages
+        run: pip install pandas lxml requests
+
+      - name: Post Tate stats
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: python stats.py
