@@ -2,9 +2,9 @@
 name: Tate McRae Daily Stats
 
 on:
-  workflow_dispatch:
   schedule:
-    - cron: "17 23 * * *"
+    - cron: '0 23 * * 1'
+  workflow_dispatch:
 
 jobs:
   post-stats:
