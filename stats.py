@@ -6,6 +6,9 @@ from billboard_charts import fetch_chart
 # Discord webhook from your GitHub repository secret
 WEBHOOK = os.environ["DISCORD_WEBHOOK_URL"]
 
+# Discord role ID to ping
+ROLE_ID = "1570273188007379024"
+
 # Tate McRae banner image
 IMAGE_URL = (
     "https://cloudimages.broadwayworld.com/columnpiccloud/"
@@ -98,21 +101,25 @@ for chart_name, chart_info in CHARTS.items():
         print(f"Error fetching {chart_name}: {error}")
         lines.append("Chart data temporarily unavailable.\n")
 
-
 # Prepare the chart text
 description = "\n".join(lines)
 
 if len(description) > 4000:
     description = description[:3950] + "\n\nReport shortened."
 
-# Send everything in ONE continuous Discord embed
+# Send the role ping and chart report
 response = requests.post(
     WEBHOOK,
     json={
+        "content": f"<@&{ROLE_ID}>",
+        "allowed_mentions": {
+            "parse": [],
+            "roles": [ROLE_ID]
+        },
         "embeds": [
             {
                 "author": {
-                    "name": "TATE MCRAE • DAILY CHART REPORT"
+                    "name": "TATE MCRAE • WEEKLY CHART REPORT"
                 },
                 "title": "📊 Billboard Chart Update",
                 "description": description,
@@ -129,5 +136,4 @@ response = requests.post(
 
 response.raise_for_status()
 
-print("Successfully posted Tate McRae's Billboard chart update!")
-
+print("Successfully posted Tate McRae's weekly Billboard chart update!")
